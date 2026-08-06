@@ -13,7 +13,7 @@ venv/
 .ipynb_checkpoints/
 .DS_Store
 
-# Local data products (keep configs/scripts in git, not FITS)
+# Local data products (not FITS)
 *.fits
 *.fit
 *.fz
@@ -24,8 +24,17 @@ venv/
 output/
 reduced/
 masters/
+diagnostics/
+
+# Night configs are local / auto-generated (machine-specific paths).
+# Commit only example_*.yaml templates.
+configs/*.yaml
+!configs/example_*.yaml
+
+# Logs
 logs/
 *.log
+*.log.*
 
 # Editor
 .idea/

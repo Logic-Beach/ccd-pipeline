@@ -56,12 +56,15 @@ output (cancel falls back to typing a path).
 ## Non-interactive commands
 
 ```bash
-ccd inventory --config configs/wiyn_hdi_2017jun29.yaml
-ccd masters   --config configs/wiyn_hdi_2017jun29.yaml --only bias
-ccd masters   --config configs/wiyn_hdi_2017jun29.yaml --only flats --filter r
-ccd sanity    --config configs/wiyn_hdi_2017jun29.yaml
-ccd reduce    --config configs/wiyn_hdi_2017jun29.yaml --limit 2
+ccd inventory --config configs/example_wiyn_hdi.yaml
+ccd masters   --config configs/example_wiyn_hdi.yaml --only bias
+ccd masters   --config configs/example_wiyn_hdi.yaml --only flats --filter r
+ccd sanity    --config configs/example_wiyn_hdi.yaml
+ccd reduce    --config configs/example_wiyn_hdi.yaml --limit 2
 ```
+
+Night YAML under `configs/` is gitignored (auto-generated / machine-specific paths).
+Copy `configs/example_wiyn_hdi.yaml` or run `ccd` to create a local config.
 
 `ccd sanity` checks raw overscan (light leak / uniformity column cuts), then
 master bias/flat statistics and row/column profiles. PNGs land under
