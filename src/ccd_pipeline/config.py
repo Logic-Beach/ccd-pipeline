@@ -1,4 +1,8 @@
-"""Configuration loading helpers."""
+"""Configuration loading helpers.
+
+Night YAML files list instrument keywords and data paths. Paths may be absolute
+(external drives are fine) or relative to the ``ccd-pipeline`` project root.
+"""
 
 from __future__ import annotations
 

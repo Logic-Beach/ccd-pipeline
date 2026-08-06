@@ -1,4 +1,9 @@
-"""FITS I/O helpers for HDI multi-extension files."""
+"""FITS I/O helpers for multi-extension (MEF) and single-HDU products.
+
+WIYN HDI raw frames store the detector image in extension ``xy00``; pipeline
+products are written as single-HDU FITS. Filter names are resolved from a
+night ``filter_map`` (``FILTER1,FILTER2`` → short name such as ``r``).
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,8 @@
-"""Command-line entry points."""
+"""Command-line entry points.
+
+``ccd`` with no subcommand launches the interactive wizard. Subcommands wrap
+inventory / masters / sanity / reduce for scripting.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ from .config import load_config
 from .inventory import format_inventory, inventory_night
 from .masters import build_all_masters, make_master_bias, make_master_flats
 from .reduce import reduce_science
+from .sanity import sanity_check_masters
+from .wizard import wizard_main
 
 
 def _config_arg(parser: argparse.ArgumentParser) -> None:
@@ -69,5 +75,67 @@ def reduce_main(argv: list[str] | None = None) -> None:
     reduce_science(cfg, limit=args.limit)
 
 
+def sanity_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Sanity-check master bias and flats")
+    _config_arg(parser)
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open diagnostic PNGs automatically",
+    )
+    parser.add_argument(
+        "--filter",
+        action="append",
+        dest="filters",
+        default=None,
+        help="Only check these flat filters (repeatable)",
+    )
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+    sanity_check_masters(cfg, open_plots=not args.no_open, filters=args.filters)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """
+    Top-level ``ccd`` command.
+
+    Examples
+    --------
+    ccd
+    ccd /path/to/raw/night
+    ccd inventory --config configs/....yaml
+    ccd masters --config ... --only bias
+    ccd sanity --config ...
+    ccd reduce --config ...
+    """
+    argv = list(argv) if argv is not None else None
+    import sys
+
+    if argv is None:
+        argv = sys.argv[1:]
+
+    subcommands = {"inventory", "masters", "sanity", "reduce", "wizard", "help"}
+    if argv and argv[0] in subcommands:
+        command = argv[0]
+        rest = argv[1:]
+        if command == "help":
+            print(__doc__)
+            return
+        if command == "wizard":
+            wizard_main(rest)
+        elif command == "inventory":
+            inventory_main(rest)
+        elif command == "masters":
+            masters_main(rest)
+        elif command == "sanity":
+            sanity_main(rest)
+        elif command == "reduce":
+            reduce_main(rest)
+        return
+
+    # No subcommand: interactive flow; optional raw-dir path as first arg
+    wizard_main(argv)
+
+
 if __name__ == "__main__":
-    inventory_main()
+    main()

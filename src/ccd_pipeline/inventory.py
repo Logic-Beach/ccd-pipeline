@@ -1,4 +1,8 @@
-"""Inventory raw frames for a night."""
+"""Inventory raw frames for a night.
+
+Reads primary headers only (fast) to tally ``OBSTYPE``, filters, and objects
+before any calibration is run.
+"""
 
 from __future__ import annotations
 
@@ -67,24 +71,26 @@ def inventory_night(cfg: dict) -> dict:
 
 
 def format_inventory(summary: dict) -> str:
+    from .term import S, style
+
     lines = [
         f"Raw directory: {summary['raw_dir']}",
         f"Total FITS (excluding latest.fits): {summary['n_files']}",
         "",
-        "By OBSTYPE:",
+        style("By OBSTYPE:", S.BOLD, S.CYAN),
     ]
     for k, n in sorted(summary["by_type"].items(), key=lambda kv: (-kv[1], kv[0])):
         lines.append(f"  {n:4d}  {k}")
 
-    lines += ["", "Flats by filter:"]
+    lines += ["", style("Flats by filter:", S.BOLD, S.CYAN)]
     for k, n in sorted(summary["flats_by_filter"].items()):
         lines.append(f"  {n:4d}  {k}")
 
-    lines += ["", "Science by filter:"]
+    lines += ["", style("Science by filter:", S.BOLD, S.CYAN)]
     for k, n in sorted(summary["science_by_filter"].items()):
         lines.append(f"  {n:4d}  {k}")
 
-    lines += ["", "Science by OBJECT (top 30):"]
+    lines += ["", style("Science by OBJECT (top 30):", S.BOLD, S.CYAN)]
     items = sorted(summary["science_by_object"].items(), key=lambda kv: (-kv[1], kv[0]))
     for k, n in items[:30]:
         lines.append(f"  {n:4d}  {k}")

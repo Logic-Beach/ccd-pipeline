@@ -1,4 +1,14 @@
-"""Build master bias and master flats."""
+"""Build master bias and master flats.
+
+Follows the Astropy CCD Reduction Guide:
+
+* ``02-02-Calibrating-bias-images`` — overscan + trim each bias
+* ``02-04-Combine-bias-images-to-make-master`` — σ-clip combine → master bias
+* ``05-03-Calibrating-the-flats`` — overscan, trim, subtract master bias
+* ``05-04-Combining-flats`` — inverse-median scale + combine → master flat
+
+Guide: https://www.astropy.org/ccd-reduction-and-photometry-guide/
+"""
 
 from __future__ import annotations
 
@@ -9,42 +19,71 @@ from .calibrate import (
     apply_overscan_and_trim,
     combine_frames,
     inv_median,
+    print_processing_plan,
     subtract_bias,
 )
 from .config import ensure_dirs
 from .inventory import inventory_night
 from .io import read_ccd, write_ccd
+from .term import dim, step, subheading, success
 
 
 def _rows_of_type(summary: dict, obstype: str) -> list[dict]:
     return [r for r in summary["rows"] if r["obstype"] == obstype.upper()]
 
 
+def _print_file_list(title: str, rows: list[dict]) -> None:
+    print(title)
+    for row in rows:
+        exp = row.get("exptime")
+        obj = row.get("object") or ""
+        filt = row.get("filter") or ""
+        # EXPTIME is seconds (FITS). For biases it is often a controller
+        # request time even when the shutter never opens — not sky exposure.
+        extra = f"  EXPTIME={exp} s"
+        if obj:
+            extra += f"  OBJECT={obj!r}"
+        if filt:
+            extra += f"  filter={filt}"
+        print(dim(f"  {row['file']}{extra}"))
+    print(dim(f"  ({len(rows)} files)"))
+
+
 def make_master_bias(cfg: dict) -> Path:
+    """Calibrate bias frames and combine into ``master_bias.fits``."""
     ensure_dirs(cfg)
     summary = inventory_night(cfg)
     bias_rows = _rows_of_type(summary, cfg["obstypes"]["bias"])
     if not bias_rows:
         raise RuntimeError("No bias frames found")
 
-    print(f"Building master bias from {len(bias_rows)} frames...")
+    print_processing_plan(cfg, kind="bias", title="Master bias")
+    _print_file_list(f"\nInput frames ({len(bias_rows)}):", bias_rows)
+
     calibrated = []
     for row in bias_rows:
+        step(row["file"])
         ccd = read_ccd(
             row["path"],
             image_hdu=cfg["fits"]["image_hdu"],
             unit=cfg["fits"]["unit"],
         )
-        calibrated.append(apply_overscan_and_trim(ccd, cfg))
+        print(dim(f"    loaded shape={ccd.shape}"))
+        # Guide 02-02: overscan-subtract + trim BEFORE combining biases
+        calibrated.append(
+            apply_overscan_and_trim(ccd, cfg, verbose=True, label=row["file"])
+        )
 
     comb = cfg["combine"]["bias"]
+    step("combine calibrated biases")
     master = combine_frames(
         calibrated,
         method=comb.get("method", "average"),
         sigma_clip=comb.get("sigma_clip", True),
         sigma_clip_low=comb.get("sigma_clip_low", 5),
         sigma_clip_high=comb.get("sigma_clip_high", 5),
-        mem_limit=comb.get("mem_limit", 4e9),
+        mem_limit=comb.get("mem_limit"),
+        verbose=True,
     )
     master.meta["IMAGETYP"] = "BIAS"
     master.meta["OBSTYPE"] = "BIAS"
@@ -52,11 +91,12 @@ def make_master_bias(cfg: dict) -> Path:
 
     out = Path(cfg["paths"]["masters_dir"]) / "master_bias.fits"
     write_ccd(master, out)
-    print(f"Wrote {out}")
+    success(f"\nWrote master bias: {out}  shape={master.shape}")
     return out
 
 
 def make_master_flats(cfg: dict, *, filters: list[str] | None = None) -> dict[str, Path]:
+    """Calibrate flats per filter and write ``master_flat_<filter>.fits``."""
     ensure_dirs(cfg)
     summary = inventory_night(cfg)
     flat_rows = _rows_of_type(summary, cfg["obstypes"]["flat"])
@@ -68,7 +108,6 @@ def make_master_flats(cfg: dict, *, filters: list[str] | None = None) -> dict[st
         raise RuntimeError(
             f"Master bias not found: {master_bias_path}. Run bias step first."
         )
-    # Masters are written as single-HDU CCDData files
     master_bias = read_ccd(master_bias_path, image_hdu=0, unit=cfg["fits"]["unit"])
 
     by_filter: dict[str, list] = defaultdict(list)
@@ -80,22 +119,31 @@ def make_master_flats(cfg: dict, *, filters: list[str] | None = None) -> dict[st
         raise RuntimeError(f"No flats matched filters={filters}")
 
     comb = cfg["combine"]["flat"]
+    # Guide 05-04: scale each flat by 1/median so exposure/level differences
+    # do not weight the stack unevenly; combined master then has median ≈ 1.
     scale = inv_median if comb.get("scale") == "inv_median" else None
     outputs: dict[str, Path] = {}
 
+    print_processing_plan(cfg, kind="flat", title="Master flats")
+
     for filt, rows in sorted(by_filter.items()):
-        print(f"Building master flat '{filt}' from {len(rows)} frames...")
+        subheading(f"filter '{filt}' — {len(rows)} frames")
+        _print_file_list(f"Input frames ({len(rows)}):", rows)
         calibrated = []
         for row in rows:
+            step(row["file"])
             ccd = read_ccd(
                 row["path"],
                 image_hdu=cfg["fits"]["image_hdu"],
                 unit=cfg["fits"]["unit"],
             )
-            ccd = apply_overscan_and_trim(ccd, cfg)
-            ccd = subtract_bias(ccd, master_bias)
+            print(dim(f"    loaded shape={ccd.shape}"))
+            # Guide 05-03: overscan/trim, then subtract master bias (no dark here)
+            ccd = apply_overscan_and_trim(ccd, cfg, verbose=True, label=row["file"])
+            ccd = subtract_bias(ccd, master_bias, verbose=True, label=row["file"])
             calibrated.append(ccd)
 
+        step(f"combine calibrated flats (filter={filt})")
         master = combine_frames(
             calibrated,
             method=comb.get("method", "average"),
@@ -103,7 +151,8 @@ def make_master_flats(cfg: dict, *, filters: list[str] | None = None) -> dict[st
             sigma_clip=comb.get("sigma_clip", True),
             sigma_clip_low=comb.get("sigma_clip_low", 5),
             sigma_clip_high=comb.get("sigma_clip_high", 5),
-            mem_limit=comb.get("mem_limit", 4e9),
+            mem_limit=comb.get("mem_limit"),
+            verbose=True,
         )
         master.meta["IMAGETYP"] = "FLAT"
         master.meta["OBSTYPE"] = "FLAT"
@@ -113,7 +162,7 @@ def make_master_flats(cfg: dict, *, filters: list[str] | None = None) -> dict[st
         out = Path(cfg["paths"]["masters_dir"]) / f"master_flat_{filt}.fits"
         write_ccd(master, out)
         outputs[filt] = out
-        print(f"Wrote {out}")
+        success(f"\nWrote master flat: {out}  shape={master.shape}")
 
     return outputs
 
