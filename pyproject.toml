@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccd-pipeline"
+version = "0.1.0"
+description = "CCD reduction pipeline for WIYN 0.9m HDI (Astropy/ccdproc)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "astropy",
+  "ccdproc",
+  "numpy",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+ccd-inventory = "ccd_pipeline.cli:inventory_main"
+ccd-masters = "ccd_pipeline.cli:masters_main"
+ccd-reduce = "ccd_pipeline.cli:reduce_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

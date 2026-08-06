@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Jupyter / OS
+.ipynb_checkpoints/
+.DS_Store
+
+# Local data products (keep configs/scripts in git, not FITS)
+*.fits
+*.fit
+*.fz
+*.fits.bz2
+*.fit.bz2
+
+# Pipeline outputs
+output/
+reduced/
+masters/
+logs/
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp

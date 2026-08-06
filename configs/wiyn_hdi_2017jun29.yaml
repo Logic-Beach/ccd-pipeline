@@ -1,0 +1,81 @@
+# WIYN 0.9m HDI — night of 2017-06-29 (example data under astronomy/Raw Data)
+
+night_id: "2017JUN29"
+instrument: "hdi"
+telescope: "WIYN0.9m"
+
+paths:
+  raw_dir: "../Raw Data/2017_JUN_JAS/RAW/2017JUN29"
+  output_dir: "../Reduced Data/2017JUN29"
+  masters_dir: "../Reduced Data/2017JUN29/masters"
+
+fits:
+  # HDI stores the detector image in extension 'xy00' (index 1)
+  image_hdu: "xy00"
+  unit: "adu"
+
+# Header keywords used by this instrument
+keywords:
+  obstype: "OBSTYPE"
+  exptime: "EXPTIME"
+  object: "OBJECT"
+  filter1: "FILTER1"
+  filter2: "FILTER2"
+  biassec: "BIASSEC"
+  datasec: "DATASEC"
+
+obstypes:
+  bias: "BIAS"
+  flat: "FLAT"
+  science: "OBJECT"
+
+# Overscan / trim — from HDI image-extension headers
+# BIASSEC is already present; ccdproc will parse FITS section strings.
+overscan:
+  median: true
+
+# No dark frames available for this night
+darks:
+  enabled: false
+
+combine:
+  bias:
+    method: "average"
+    sigma_clip: true
+    sigma_clip_low: 5
+    sigma_clip_high: 5
+    mem_limit: 4000000000
+  flat:
+    method: "average"
+    scale: "inv_median"
+    sigma_clip: true
+    sigma_clip_low: 5
+    sigma_clip_high: 5
+    mem_limit: 4000000000
+
+# Map HDI filter-wheel IDs → short filter names using dome-flat OBJECT names.
+# FILTER1/FILTER2 alone are numeric wheel positions; flats are labeled dflat-<name>.
+filter_map:
+  # key = "FILTER1,FILTER2"
+  "107,200": "6580"
+  "107,202": "u"
+  "107,203": "g"
+  "107,204": "r"
+  "107,205": "i"
+  "107,206": "z"
+  "102,207": "V"
+  "103,207": "R"
+  "104,207": "I"
+  "106,207": "Wash-M"
+  "105,207": "Wash-C"
+  "101,207": "Wash-51"
+  "100,207": "OIII"
+
+science:
+  # Optional: only reduce these OBJECT names (empty = all science frames)
+  include_objects: []
+  # Optional: skip focus / junk frames by substring
+  exclude_object_substrings:
+    - "rfocus"
+    - "junk"
+    - "focus"
