@@ -67,8 +67,22 @@ filter_map:
   "100,207": "OIII"
 
 science:
+  # Products: {night_id}.{OBJECT}.{filter}[.NN].fits
   include_objects: []
   exclude_object_substrings:
     - "rfocus"
     - "junk"
     - "focus"
+
+# Offline WCS via astrometry.net solve-field (after ccd reduce)
+wcs:
+  enabled: true
+  solver: "astrometry-net"
+  solve_field: "solve-field"
+  index_dir: null
+  scale_arcsec_per_pix: 0.43
+  scale_tol_frac: 0.05
+  radius_deg: 1.0
+  downsample: 2
+  overwrite: false
+  timeout_sec: 120

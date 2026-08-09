@@ -10,6 +10,7 @@ Typical night workflow
 3. Build master flats (bias-subtracted, inverse-median scaled)
 4. Sanity-check overscan + masters
 5. Calibrate science: overscan → trim → bias → flat
+6. Plate-solve science WCS (offline ``solve-field``)
 """
 
 __version__ = "0.1.0"

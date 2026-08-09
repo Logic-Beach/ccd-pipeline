@@ -8,6 +8,12 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
+from collections.abc import Callable
+from typing import TypeVar
+
+_T = TypeVar("_T")
 
 
 def color_enabled() -> bool:
@@ -113,3 +119,48 @@ def status_tag(level: str) -> str:
 
 def label_value(label: str, value: object) -> str:
     return f"{style(label, S.DIM)}{value}"
+
+
+def run_with_spinner(
+    message: str,
+    fn: Callable[..., _T],
+    /,
+    *args,
+    interval: float = 0.45,
+    **kwargs,
+) -> _T:
+    """Run ``fn`` while printing an animated ``...`` line with elapsed seconds.
+
+    Intended for long CPU-bound steps (e.g. σ-clip combine of 4k CCD frames)
+    that otherwise look hung. Falls back to a static message when stdout is
+    not a TTY.
+    """
+    if not getattr(sys.stdout, "isatty", lambda: False)():
+        print(dim(f"    {message} (this may take a few minutes)..."))
+        sys.stdout.flush()
+        return fn(*args, **kwargs)
+
+    stop = threading.Event()
+    t0 = time.monotonic()
+
+    def _spin() -> None:
+        n = 0
+        while not stop.wait(interval):
+            dots = "." * ((n % 3) + 1)
+            elapsed = int(time.monotonic() - t0)
+            line = f"    {message}{dots:<3}  ({elapsed}s)"
+            print("\r" + dim(line), end="", flush=True)
+            n += 1
+
+    print(dim(f"    {message} (this may take a few minutes)"), end="", flush=True)
+    thread = threading.Thread(target=_spin, daemon=True)
+    thread.start()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        elapsed = int(time.monotonic() - t0)
+        # Clear the spinner line, then confirm done
+        print("\r" + " " * 72 + "\r", end="")
+        print(dim(f"    {message} done ({elapsed}s)"))

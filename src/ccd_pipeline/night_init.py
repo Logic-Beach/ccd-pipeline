@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 from astropy.io import fits
 
-from .config import find_project_root
+from .config import find_project_root, has_project_marker
 from .filters_discover import discover_filter_combos
 
 
@@ -48,11 +48,40 @@ def _pick_keyword(header, candidates: list[str], default: str) -> str:
     return default
 
 
+def _default_wcs_block(instrument: str) -> dict[str, Any]:
+    """Instrument-aware defaults for offline ``solve-field`` plate-solving."""
+    inst = str(instrument or "").lower()
+    # HDI: 0.43″/pix, ~29′ FOV (WIYN 0.9m ops manual)
+    scale = 0.43 if "hdi" in inst else 0.43
+    return {
+        "enabled": True,
+        "solver": "astrometry-net",
+        "solve_field": "solve-field",
+        "index_dir": None,
+        "scale_arcsec_per_pix": scale,
+        "scale_tol_frac": 0.05,
+        "radius_deg": 1.0,
+        "downsample": 2,
+        "overwrite": False,
+        "timeout_sec": 120,
+    }
+
+
 def _rel_to_root(path: Path, root: Path) -> str:
+    """Prefer absolute data paths unless ``root`` is a real package/repo tree.
+
+    Campaign folders (e.g. ``2017_JUN_JAS``) often have no ``pyproject.toml``;
+    storing ``RAW/...`` relative to them breaks when ``load_config`` cannot find
+    the same root. Absolute paths are unambiguous on external drives too.
+    """
+    path = path.resolve()
+    root = root.resolve()
+    if not has_project_marker(root):
+        return str(path)
     try:
-        return str(path.resolve().relative_to(root.resolve()))
+        return str(path.relative_to(root))
     except ValueError:
-        return str(path.resolve())
+        return str(path)
 
 
 def auto_filter_map(combos: list[dict[str, Any]]) -> dict[str, str]:
@@ -175,15 +204,25 @@ def inspect_raw_dir(raw_dir: Path) -> dict[str, Any]:
     }
 
 
+def _sibling_reduced_dir(campaign_root: Path, night_id: str) -> Path:
+    """Prefer an existing REDUCED/reduced sibling; else create ``reduced/<night>``."""
+    for name in ("reduced", "REDUCED"):
+        sibling = campaign_root / name
+        if sibling.is_dir():
+            return sibling / night_id
+    return campaign_root / "reduced" / night_id
+
+
 def resolve_night_paths(raw_dir: Path, project_root: Path) -> tuple[str, Path, Path, Path]:
     """
-    Map a selected path onto data/<night>/{raw,reduced}.
+    Map a selected path onto raw + reduced locations for a night.
 
     Accepts either:
       data/<night>/raw
-      data/<night>          (uses ./raw if present)
-      any folder of FITS    (night_id = folder name; reduced beside it as ../reduced
-                             only when parent layout is data/<night>/raw)
+      data/<night>              (uses ./raw if present)
+      campaign/RAW/<night>      (HDI-style; reduced → campaign/reduced/<night>
+                                 or campaign/REDUCED/<night> if that exists)
+      any folder of FITS        (night_id = folder name)
     """
     raw_dir = Path(raw_dir).expanduser().resolve()
     data_root = (project_root.parent / "data").resolve()
@@ -199,6 +238,13 @@ def resolve_night_paths(raw_dir: Path, project_root: Path) -> tuple[str, Path, P
         night_id = raw_dir.name
         return night_id, raw_dir / "raw", raw_dir / "reduced", raw_dir
 
+    # campaign/RAW/<night> or campaign/raw/<night> (FITS directly in night folder)
+    if raw_dir.parent.name.lower() == "raw":
+        campaign_root = raw_dir.parent.parent
+        night_id = raw_dir.name
+        reduced = _sibling_reduced_dir(campaign_root, night_id)
+        return night_id, raw_dir, reduced, campaign_root
+
     # Fallback: FITS live directly in this folder
     night_id = raw_dir.name
     # Prefer data/<night>/reduced when under data/
@@ -207,7 +253,7 @@ def resolve_night_paths(raw_dir: Path, project_root: Path) -> tuple[str, Path, P
         night_root = data_root / night_id
         return night_id, raw_dir, night_root / "reduced", night_root
     except ValueError:
-        return night_id, raw_dir, raw_dir.parent / "reduced" / night_id, raw_dir.parent / night_id
+        return night_id, raw_dir, raw_dir.parent / "reduced" / night_id, raw_dir.parent
 
 
 def build_config_from_raw(
@@ -271,6 +317,7 @@ def build_config_from_raw(
             "include_objects": [],
             "exclude_object_substrings": ["rfocus", "junk", "focus"],
         },
+        "wcs": _default_wcs_block(info["instrument"]),
     }
 
     safe_inst = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(info["instrument"]))

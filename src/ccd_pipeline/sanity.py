@@ -573,6 +573,27 @@ def save_diagnostic_figure(
     ylabel = "ADU" if kind == "bias" else "relative response"
     ideal = 0.0 if kind == "bias" else 1.0
 
+    # Shared ADU scale for row/column cuts so structure is comparable
+    cut_vals = np.concatenate(
+        [
+            np.asarray(row_cut, dtype=float).ravel(),
+            np.asarray(col_cut, dtype=float).ravel(),
+        ]
+    )
+    cut_vals = cut_vals[np.isfinite(cut_vals)]
+    if cut_vals.size:
+        y_lo, y_hi = np.percentile(cut_vals, [0.5, 99.5])
+        if y_hi <= y_lo:
+            y_lo, y_hi = float(np.min(cut_vals)), float(np.max(cut_vals))
+        pad = 0.05 * (y_hi - y_lo) if y_hi > y_lo else 1.0
+        shared_ylim = (y_lo - pad, y_hi + pad)
+    else:
+        shared_ylim = None
+
+    # Shared pixel-axis extent when the detector is (nearly) square
+    pix_max = max(row_cut.size, col_cut.size) - 1
+    shared_xlim = (0, max(pix_max, 1))
+
     # --- middle-row profile (counts vs x) ---
     ax_row = axes[1, 0]
     x = np.arange(row_cut.size)
@@ -588,7 +609,9 @@ def save_diagnostic_figure(
     ax_row.set_xlabel("x (pixel)")
     ax_row.set_ylabel(ylabel)
     ax_row.legend(fontsize=8)
-    ax_row.set_xlim(0, max(row_cut.size - 1, 1))
+    ax_row.set_xlim(*shared_xlim)
+    if shared_ylim is not None:
+        ax_row.set_ylim(*shared_ylim)
 
     # --- middle-column profile (counts vs y) ---
     ax_col = axes[1, 1]
@@ -605,7 +628,9 @@ def save_diagnostic_figure(
     ax_col.set_xlabel("y (pixel)")
     ax_col.set_ylabel(ylabel)
     ax_col.legend(fontsize=8)
-    ax_col.set_xlim(0, max(col_cut.size - 1, 1))
+    ax_col.set_xlim(*shared_xlim)
+    if shared_ylim is not None:
+        ax_col.set_ylim(*shared_ylim)
 
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()

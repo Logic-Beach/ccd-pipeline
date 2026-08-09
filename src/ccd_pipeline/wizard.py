@@ -2,7 +2,7 @@
 
 Entry point for ``ccd`` with no subcommand. Prompts for a night folder (or uses
 a path argument), writes a YAML config, then optionally runs bias → flats →
-sanity → science.
+sanity → science → WCS.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from .prompt import ask_directory, ask_file, ask_yes_no, choose
 from .reduce import reduce_science
 from .sanity import sanity_check_masters
 from .term import banner, dim, heading, info, label_value, subheading, success, warn
+from .wcs_solve import solve_science_wcs
 
 
 def init_from_raw_dir(raw_dir: Path | None = None) -> Path:
@@ -151,6 +152,23 @@ def step_through_reduction(config_path: Path) -> None:
         reduce_science(cfg, limit=limit)
     else:
         warn("Skipped science calibration.")
+
+    # WCS (offline astrometry.net)
+    heading("Step: WCS plate-solve")
+    sci_dir = Path(cfg["paths"]["output_dir"]) / "science"
+    n_sci = len(list(sci_dir.glob("*.fits"))) if sci_dir.is_dir() else 0
+    if n_sci == 0:
+        warn("No calibrated science frames — skipping WCS.")
+    elif ask_yes_no(f"Add WCS to science frames ({n_sci} found)", False):
+        limit = None
+        if ask_yes_no("Limit to first N frames (test)", False):
+            from .prompt import ask_int
+
+            limit = ask_int("N", 2, minimum=1)
+        overwrite = ask_yes_no("Re-solve frames that already have WCS", False)
+        solve_science_wcs(cfg, limit=limit, overwrite=overwrite)
+    else:
+        warn("Skipped WCS plate-solve.")
 
     success("\nDone.")
 

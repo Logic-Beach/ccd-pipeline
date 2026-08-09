@@ -1,7 +1,7 @@
 """Command-line entry points.
 
 ``ccd`` with no subcommand launches the interactive wizard. Subcommands wrap
-inventory / masters / sanity / reduce for scripting.
+inventory / masters / sanity / reduce / wcs for scripting.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .inventory import format_inventory, inventory_night
 from .masters import build_all_masters, make_master_bias, make_master_flats
 from .reduce import reduce_science
 from .sanity import sanity_check_masters
+from .wcs_solve import solve_science_wcs
 from .wizard import wizard_main
 
 
@@ -95,6 +96,27 @@ def sanity_main(argv: list[str] | None = None) -> None:
     sanity_check_masters(cfg, open_plots=not args.no_open, filters=args.filters)
 
 
+def wcs_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Plate-solve calibrated science frames (offline astrometry.net)"
+    )
+    _config_arg(parser)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only solve the first N science frames (for testing)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Re-solve frames that already have a WCS",
+    )
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+    solve_science_wcs(cfg, limit=args.limit, overwrite=args.overwrite or None)
+
+
 def main(argv: list[str] | None = None) -> None:
     """
     Top-level ``ccd`` command.
@@ -107,6 +129,7 @@ def main(argv: list[str] | None = None) -> None:
     ccd masters --config ... --only bias
     ccd sanity --config ...
     ccd reduce --config ...
+    ccd wcs --config ...
     """
     argv = list(argv) if argv is not None else None
     import sys
@@ -114,7 +137,7 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    subcommands = {"inventory", "masters", "sanity", "reduce", "wizard", "help"}
+    subcommands = {"inventory", "masters", "sanity", "reduce", "wcs", "wizard", "help"}
     if argv and argv[0] in subcommands:
         command = argv[0]
         rest = argv[1:]
@@ -131,6 +154,8 @@ def main(argv: list[str] | None = None) -> None:
             sanity_main(rest)
         elif command == "reduce":
             reduce_main(rest)
+        elif command == "wcs":
+            wcs_main(rest)
         return
 
     # No subcommand: interactive flow; optional raw-dir path as first arg

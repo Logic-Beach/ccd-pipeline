@@ -69,17 +69,23 @@ def print_processing_plan(cfg: dict, *, kind: str, title: str | None = None) -> 
 
 
 def _append_history(ccd: CCDData, line: str) -> None:
-    """Append a HISTORY card without wiping earlier pipeline notes."""
-    existing = ccd.meta.get("HISTORY", None)
-    if existing is None:
-        ccd.meta["HISTORY"] = line
+    """Append a HISTORY card without wiping earlier pipeline notes.
+
+    FITS commentary keywords are multi-card; never join lines with ``\\n``
+    (astropy rejects non-printable characters in a single card value).
+    """
+    meta = ccd.meta
+    if hasattr(meta, "add_history"):
+        meta.add_history(line)
         return
-    # Astropy may store HISTORY as a single string or a list-like
-    if isinstance(existing, list):
+    # Plain-dict meta (rare in tests): keep a list of discrete cards
+    existing = meta.get("HISTORY")
+    if existing is None:
+        meta["HISTORY"] = [line]
+    elif isinstance(existing, list):
         existing.append(line)
-        ccd.meta["HISTORY"] = existing
     else:
-        ccd.meta["HISTORY"] = f"{existing}\n{line}"
+        meta["HISTORY"] = [str(existing), line]
 
 
 def apply_overscan_and_trim(
@@ -211,17 +217,26 @@ def combine_frames(
     if scale is not None:
         kwargs["scale"] = scale
 
+    n_frames = len(paths_or_ccds) if hasattr(paths_or_ccds, "__len__") else None
     if verbose:
-        from .term import dim
+        from .term import dim, run_with_spinner
 
         scale_txt = "inv_median" if scale is not None else "none"
+        n_txt = f"{n_frames} frames, " if n_frames is not None else ""
         print(
             dim(
-                f"    combine: method={method}  sigma_clip={sigma_clip} "
+                f"    combine: {n_txt}method={method}  sigma_clip={sigma_clip} "
                 f"({sigma_clip_low}/{sigma_clip_high})  scale={scale_txt}"
             )
         )
+        combined = run_with_spinner(
+            "combining (σ-clip average of large CCD frames)",
+            ccdp.combine,
+            paths_or_ccds,
+            **kwargs,
+        )
+    else:
+        combined = ccdp.combine(paths_or_ccds, **kwargs)
 
-    combined = ccdp.combine(paths_or_ccds, **kwargs)
     combined.meta["combined"] = True
     return combined
