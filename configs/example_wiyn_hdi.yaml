@@ -85,4 +85,7 @@ wcs:
   radius_deg: 1.0
   downsample: 2
   overwrite: false
-  timeout_sec: 120
+  timeout_sec: 300
+  verbose: true
+  show_solver_output: false   # true = stream every solve-field line live
+  include_objects: []         # e.g. [APSExS-F-1]; empty = all

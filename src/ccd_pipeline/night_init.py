@@ -63,7 +63,10 @@ def _default_wcs_block(instrument: str) -> dict[str, Any]:
         "radius_deg": 1.0,
         "downsample": 2,
         "overwrite": False,
-        "timeout_sec": 120,
+        "timeout_sec": 300,
+        "verbose": True,
+        "show_solver_output": False,
+        "include_objects": [],
     }
 
 

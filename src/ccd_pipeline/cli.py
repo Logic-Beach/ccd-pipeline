@@ -105,7 +105,15 @@ def wcs_main(argv: list[str] | None = None) -> None:
         "--limit",
         type=int,
         default=None,
-        help="Only solve the first N science frames (for testing)",
+        help="Only solve the first N matching science frames (for testing)",
+    )
+    parser.add_argument(
+        "--object",
+        action="append",
+        default=None,
+        metavar="NAME",
+        dest="objects",
+        help="Only solve frames for this OBJECT (repeatable; matches filename)",
     )
     parser.add_argument(
         "--overwrite",
@@ -114,7 +122,12 @@ def wcs_main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
-    solve_science_wcs(cfg, limit=args.limit, overwrite=args.overwrite or None)
+    solve_science_wcs(
+        cfg,
+        limit=args.limit,
+        overwrite=args.overwrite or None,
+        objects=args.objects,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

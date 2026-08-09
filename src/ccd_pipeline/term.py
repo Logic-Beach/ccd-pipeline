@@ -127,6 +127,7 @@ def run_with_spinner(
     /,
     *args,
     interval: float = 0.45,
+    hint: str | None = None,
     **kwargs,
 ) -> _T:
     """Run ``fn`` while printing an animated ``...`` line with elapsed seconds.
@@ -134,25 +135,36 @@ def run_with_spinner(
     Intended for long CPU-bound steps (e.g. σ-clip combine of 4k CCD frames)
     that otherwise look hung. Falls back to a static message when stdout is
     not a TTY.
+
+    If ``hint`` is set, it is shown next to the timer (e.g. a coffee nudge).
     """
+    suffix = f" — {hint}" if hint else ""
+
     if not getattr(sys.stdout, "isatty", lambda: False)():
-        print(dim(f"    {message} (this may take a few minutes)..."))
+        print(dim(f"    {message} (this may take a few minutes)...{suffix}"))
         sys.stdout.flush()
         return fn(*args, **kwargs)
 
     stop = threading.Event()
     t0 = time.monotonic()
+    widest = 0
+
+    def _line(elapsed: int, dots: str = "...") -> str:
+        return f"    {message}{dots:<3}  ({elapsed}s){suffix}"
 
     def _spin() -> None:
+        nonlocal widest
         n = 0
         while not stop.wait(interval):
             dots = "." * ((n % 3) + 1)
             elapsed = int(time.monotonic() - t0)
-            line = f"    {message}{dots:<3}  ({elapsed}s)"
+            line = _line(elapsed, dots)
+            widest = max(widest, len(line))
             print("\r" + dim(line), end="", flush=True)
             n += 1
 
-    print(dim(f"    {message} (this may take a few minutes)"), end="", flush=True)
+    print(dim(_line(0, ".")), end="", flush=True)
+    widest = len(_line(0, "."))
     thread = threading.Thread(target=_spin, daemon=True)
     thread.start()
     try:
@@ -162,5 +174,5 @@ def run_with_spinner(
         thread.join(timeout=1.0)
         elapsed = int(time.monotonic() - t0)
         # Clear the spinner line, then confirm done
-        print("\r" + " " * 72 + "\r", end="")
+        print("\r" + " " * max(widest, 80) + "\r", end="")
         print(dim(f"    {message} done ({elapsed}s)"))
