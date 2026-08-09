@@ -36,7 +36,7 @@ Science files are named like `2017JUN29.SA_103-Z.r.01.fits`
 
 ```bash
 conda activate astro
-cd /home/deskpop/astronomy/ccd-pipeline
+cd /home/<user>/path/to/ccd-pipeline
 pip install -e .
 ```
 
@@ -52,7 +52,7 @@ sudo apt install astrometry.net astrometry-data-tycho2-07 astrometry-data-tycho2
 ls /usr/share/astrometry/index-*.fits
 ```
 
-Index series numbers are **quad angular scale** (not camera HEALPix). Lower
+Index series numbers are **quad angular scale**. Lower
 number ⇒ smaller quads / denser stars; higher ⇒ larger quads / coarser sky.
 Within a 2MASS series, `-00`…`-NN` are the **sky tiles** (HEALPix chunks).
 
@@ -68,7 +68,7 @@ Within a 2MASS series, `-00`…`-NN` are the **sky tiles** (HEALPix chunks).
 Recommended add-ons once basics are in:
 
 ```bash
-# Dense near-FOV (what helped immediately):
+# Dense near-FOV:
 sudo apt install astrometry-data-tycho2-09 \
   astrometry-data-2mass-07 astrometry-data-2mass-06 astrometry-data-2mass-05
 
@@ -78,7 +78,7 @@ sudo apt install astrometry-data-2mass-04 astrometry-data-2mass-03 \
 ```
 
 `2mass-00`…`02` are rarely worth it for full-frame HDI (huge, tiny quads).
-A timeout with **best log-odds ~1** means “no match,” not “almost” — install a
+A timeout with **best log-odds ~1** means “no match,” not “almost”, install a
 denser series before raising `wcs.timeout_sec` further.
 
 The pipeline works around a common NumPy quirk automatically. Default solve
@@ -117,10 +117,10 @@ Older HDI nights may use `RAW/<night>` instead of `<night>/raw`. Both are fine.
    and `configs/`):
 
 ```bash
-cd /home/deskpop/astronomy/2017_JUN_JAS
+cd /home/<user>/path/to/DATA
 ```
 
-(Use your own path if the data live elsewhere, including an external drive.)
+(Use your own path, including an external drive `/media/<user>/drivename/` if applicable.)
 
 From there, config files are short paths like `configs/hdi_2017jun29.yaml`.
 
@@ -149,7 +149,7 @@ Still in the campaign folder (or any folder), with `astro` active:
 
 ```bash
 conda activate astro
-cd /home/deskpop/astronomy/2017_JUN_JAS
+cd /home/<user>/path/to/data
 
 ccd
 ```
@@ -169,7 +169,7 @@ a spinner and a timer so you know it is still working.
 
 ```bash
 conda activate astro
-cd /home/deskpop/astronomy/2017_JUN_JAS
+cd /home/de<user>/path/to/data
 
 ccd inventory --config configs/hdi_2017jun29.yaml
 ccd masters   --config configs/hdi_2017jun29.yaml
