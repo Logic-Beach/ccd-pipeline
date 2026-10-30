@@ -287,7 +287,7 @@ from flat `OBJECT` labels (`dflat-r`, …).
 | Problem                  | Fix                                                             |
 | ------------------------ | --------------------------------------------------------------- |
 | `ccd: command not found` | `conda activate astro`; from repo run `pip install -e .`        |
-| Inventory 0 files        | Check `paths.raw_dir` with `ls`                                 |
+| Inventory 0 files        | Check `paths.raw_dir` with `ls` are your fits files compressed? |
 | Combine “stuck”          | Large stacks take minutes — watch the spinner                   |
 | WCS FAIL / low log-odds  | Check the plate scale, then `wcs_solve.log`. HDI ~29′: `4207`/`4107`. S2KB 20.5′: `4206`/`5206`, scale 0.60″/pix (1.20″ at 2×2). Hall 2×2: 0.739″/pix on `4107`. Next smaller quads on disk are `4206`/`5206`, `4205`/`5205`, `4204`/`5204`, `5203`. |
 | Wrong folder             | `pwd` / `ls` — expect `RAW/` and `configs/`                     |
