@@ -13,6 +13,7 @@ from ccd_pipeline.wcs_solve import (
     _parse_solve_progress,
     _short_index_name,
     _solver_fail_summary,
+    _solver_solved_index,
     _wcs_progress_line,
     build_solve_field_cmd,
     filter_science_by_objects,
@@ -71,7 +72,13 @@ def test_build_solve_field_cmd_includes_hints_and_scale():
     assert cmd[0] == "/opt/solve-field"
     assert "--no-remove-lines" in cmd
     assert "--uniformize" in cmd and cmd[cmd.index("--uniformize") + 1] == "0"
-    assert "--verbose" in cmd
+    assert "--verbose" not in cmd
+    cfg_verbose = dict(cfg)
+    cfg_verbose["verbose"] = True
+    cmd_v = build_solve_field_cmd(
+        image, out_fits=out, work_dir=work, wcs_cfg=cfg_verbose, pointing=pointing
+    )
+    assert "--verbose" in cmd_v
     assert "--cpulimit" in cmd
     assert "--ra" in cmd and "--dec" in cmd and "--radius" in cmd
     assert "--scale-units" in cmd and cmd[cmd.index("--scale-units") + 1] == "arcsecperpix"
@@ -86,14 +93,160 @@ def test_build_solve_field_cmd_includes_hints_and_scale():
     assert cmd[-1] == str(image)
 
 
+def test_s2kb_plate_scale_includes_binning():
+    from ccd_pipeline.wcs_solve import plate_scale_arcsec
+
+    assert plate_scale_arcsec(detector="s2kb") == 0.60
+    assert plate_scale_arcsec(detector="s2kb", ccdsum="2 2") == 1.20
+    assert plate_scale_arcsec(instrument="hdi", ccdsum="1 1") == 0.43
+
+
+def test_hall_plate_scale_not_hdi_fallback():
+    from ccd_pipeline.wcs_solve import (
+        apply_header_plate_scale,
+        plate_scale_arcsec,
+        plate_scale_from_header,
+    )
+
+    assert abs(plate_scale_arcsec(telescope="hall") - 0.369) < 1e-9
+    assert abs(plate_scale_arcsec(telescope="hall", ccdsum="2 2") - 0.738) < 1e-9
+    assert abs(plate_scale_arcsec(detector="E2V CCD-231 4096x4112", ccdsum="2 2") - 0.738) < 1e-9
+    hdr = fits.Header({"PIXSCAL": 0.327, "CCDSUM": "2 2"})
+    assert abs(plate_scale_from_header(hdr) - 0.654) < 1e-9
+    # Stale PIXSCAL must not override the named Hall scale.
+    assert abs(plate_scale_arcsec(telescope="hall", ccdsum="2 2", header=hdr) - 0.738) < 1e-9
+    wcfg = {"scale_arcsec_per_pix": 0.86, "scale_tol_frac": 0.05}
+    apply_header_plate_scale(wcfg, hdr)
+    lo = wcfg["scale_arcsec_per_pix"] * (1.0 - wcfg["scale_tol_frac"])
+    hi = wcfg["scale_arcsec_per_pix"] * (1.0 + wcfg["scale_tol_frac"])
+    assert lo <= 0.739 <= hi
+    assert lo <= 0.654 <= hi
+    assert lo <= 0.86 <= hi
+
+
+def test_show_command_uses_its_own_color(capsys, monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    from ccd_pipeline.term import S, show_command
+
+    show_command(["solve-field", "--ra", "10", "my frame.fits"])
+    out = capsys.readouterr().out
+    assert out.startswith(S.BOLD + S.BRIGHT_BLUE) or S.BRIGHT_BLUE in out
+    assert "$" in out
+    assert "solve-field" in out
+    assert "my frame.fits" in out
+
+
+def test_solve_field_runner_prints_command_first(capsys, monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    from ccd_pipeline.wcs_solve import _run_solve_field_streaming
+
+    code, text = _run_solve_field_streaming(
+        [sys.executable, "-c", "print('solved-ok')"],
+        env=os.environ.copy(),
+        timeout=30,
+        progress=False,
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "solved-ok" in text
+    assert "$" in out
+    assert sys.executable in out
+    # The command line is printed before the process output is returned.
+    assert out.index("$") < len(out)
+
+
+def test_processing_plan_shows_ccd_command(capsys, monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    from ccd_pipeline.calibrate import print_processing_plan
+    from ccd_pipeline.term import S
+
+    print_processing_plan(
+        {
+            "_config_path": "/tmp/night.yaml",
+            "fits": {"image_hdu": 0, "unit": "adu"},
+            "keywords": {"biassec": "BIASSEC", "datasec": "DATASEC"},
+            "overscan": {"median": True},
+            "darks": {"enabled": False},
+        },
+        kind="bias",
+    )
+    out = capsys.readouterr().out
+    assert S.BRIGHT_BLUE in out
+    assert "ccd masters --config /tmp/night.yaml --only bias" in out
+    assert "$ 1." not in out
+    assert "overscan" in out
+    underlying = next(line for line in out.splitlines() if "ccdproc.subtract_overscan" in line)
+    assert S.DIM in underlying and S.BLUE in underlying
+    assert S.BRIGHT_BLUE not in underlying
+    assert "fits_section=header['BIASSEC']" in underlying
+    assert "ccdproc.combine" in out
+
+
+def test_flat_plan_shows_ccdproc_under_pipeline_command(capsys, monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    from ccd_pipeline.calibrate import print_processing_plan
+
+    print_processing_plan(
+        {
+            "_config_path": "/Volumes/luna/2013_OCT/configs/test_2013oct12.yaml",
+            "fits": {"image_hdu": 0, "unit": "adu"},
+            "keywords": {"biassec": "BIASSEC", "datasec": "DATASEC"},
+            "overscan": {"median": True, "biassec": "[1036:1056,1:1024]"},
+            "darks": {"enabled": False},
+            "combine": {
+                "flat": {
+                    "method": "average",
+                    "scale": "inv_median",
+                    "sigma_clip": True,
+                    "sigma_clip_low": 5,
+                    "sigma_clip_high": 5,
+                }
+            },
+        },
+        kind="flat",
+    )
+    out = capsys.readouterr().out
+    ccd_at = out.index("ccd masters")
+    overscan_at = out.index("ccdproc.subtract_overscan")
+    assert ccd_at < overscan_at
+    assert "fits_section='[1036:1056,1:1024]'" in out
+    assert "ccdproc.subtract_bias(ccd, master_bias)" in out
+    assert "scale=inv_median" in out
+    assert "sigma_clip_low_thresh=5" in out
+
+
+def test_prompt_prints_rule_after_answer(capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    from ccd_pipeline.prompt import ask_yes_no
+
+    assert ask_yes_no("Build master bias", True) is True
+    assert "-------------------------------------------------------" in capsys.readouterr().out
+
+
 def test_wcs_config_defaults():
     cfg = wcs_config({})
     assert cfg["scale_arcsec_per_pix"] == 0.43
     assert cfg["solver"] == "astrometry-net"
     assert cfg["enabled"] is True
     assert cfg["timeout_sec"] == 300
-    assert cfg["verbose"] is True
+    assert cfg["verbose"] is False
     assert cfg["show_solver_output"] is False
+
+
+def test_solver_solved_index():
+    text = (
+        "Trying index /usr/share/astrometry/index-2mass-05-07.fits...\n"
+        "Field 1: solved with index index-2mass-05-07.fits.\n"
+    )
+    assert _solver_solved_index(text) == "2mass-05-07"
+    assert _solver_solved_index("") is None
 
 
 def test_solver_fail_summary():
@@ -139,12 +292,16 @@ def test_solve_progress_depth_parsing():
     assert _short_index_name("index-tycho2-09.littleendian.fits") == "tycho2-09"
     assert _parse_solve_progress("Best odds encountered: 24.0729", state)
     assert state["peak_odds"] == 24.0729
-    line = _wcs_progress_line(12, state, hint="coffee")
-    assert "depth 20–30" in line
-    assert "2mass-05-07" in line
+    line = _wcs_progress_line(12, state)
+    assert "solving…" in line
+    assert "12s" in line
     assert "24.1/30" in line or "24.07/30" in line
-    assert "(12s)" in line
-    assert "coffee" in line
+    assert "depth" not in line  # keep the live line short
+    assert _parse_solve_progress(
+        "Field 1: solved with index index-2mass-05-07.fits.", state
+    )
+    assert state["solved"] is True
+    assert state["solved_index"] == "2mass-05-07"
     assert _closeness_label(None).startswith("match —")
     assert "far" in _closeness_label(1.0)
     assert "strong" in _closeness_label(114.0)
@@ -158,6 +315,7 @@ if __name__ == "__main__":
     test_has_wcs()
     test_build_solve_field_cmd_includes_hints_and_scale()
     test_wcs_config_defaults()
+    test_solver_solved_index()
     test_solver_fail_summary()
     test_filter_science_by_objects()
     test_solve_progress_depth_parsing()

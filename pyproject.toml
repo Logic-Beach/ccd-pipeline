@@ -14,6 +14,8 @@ dependencies = [
   "numpy",
   "pyyaml",
   "matplotlib",
+  "scipy",
+  "ginga[qt6]",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,7 @@ ccd-inventory = "ccd_pipeline.cli:inventory_main"
 ccd-masters = "ccd_pipeline.cli:masters_main"
 ccd-sanity = "ccd_pipeline.cli:sanity_main"
 ccd-reduce = "ccd_pipeline.cli:reduce_main"
+ccd-fringe = "ccd_pipeline.cli:fringe_main"
 ccd-wcs = "ccd_pipeline.cli:wcs_main"
 
 [tool.setuptools.packages.find]

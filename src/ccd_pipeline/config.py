@@ -52,6 +52,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         cfg = yaml.safe_load(fh)
 
     root = config_paths_root(path)
+    cfg["_config_path"] = str(path)
     paths = cfg.setdefault("paths", {})
     for key, value in list(paths.items()):
         p = Path(value)

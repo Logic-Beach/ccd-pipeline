@@ -2,7 +2,17 @@
 
 Uses ``solve-field`` (astrometry.net) with HDI-style pointing hints
 (``RASTRNG`` / ``DECSTRNG``) and a configured pixel scale. Intended as a
-post-``reduce`` step so later stacking can align via WCS / ``reproject``.
+post-``reduce`` / post-fringe step so later stacking can align via WCS /
+``reproject`` (README Methodology §7).
+
+Not part of photometric calibration (bias/flat/fringe). WCS enables geometric
+alignment for combining; Astropy ``reproject`` and guide combining chapters
+cover the stacking side:
+https://reproject.readthedocs.io/
+https://docs.astropy.org/en/stable/wcs/
+
+Astrometry.net: https://astrometry.net/
+``solve-field`` docs: https://astrometry.net/doc/readme.html
 """
 
 from __future__ import annotations
@@ -22,7 +32,98 @@ from astropy.coordinates import Angle, SkyCoord
 from astropy.io import fits
 import astropy.units as u
 
-from .term import S, dim, info, style, success, warn
+from .io import iter_fits_files
+from .reduce import remove_unprefixed_science_twin, retitle_science_file, split_science_stage_name
+from .term import S, dim, info, show_ccd, show_command, style, success, warn
+
+
+# Unbinned plate scales (arcsec/pixel). Matched as substrings of
+# detector / instrument / telescope (lowercase).
+# S2KB: 0.60″/pix, 2048×2048 → 20.5′ (https://www.wiyn.org/09m_web/observe/s2kb.html)
+# HDI:  0.43″/pix, ~29′
+# Hall 42-inch E2V CCD-231: header PIXSCAL=0.327 is stale. solve-field on
+# 2026MAY16 2×2 frames measures 0.739″/pix (25′ field) → 0.369 unbinned.
+_UNBINNED_SCALES = (
+    ("s2kb", 0.60),
+    ("hdi", 0.43),
+    ("hall", 0.369),
+    ("ccd-231", 0.369),
+)
+
+
+def bin_factor(ccdsum: str | None) -> float:
+    """On-chip binning from a ``CCDSUM`` card such as ``2 2``."""
+    if not ccdsum:
+        return 1.0
+    parts = str(ccdsum).replace(",", " ").split()
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        return 1.0
+    if not vals or vals[0] <= 0:
+        return 1.0
+    return vals[0]
+
+
+def unbinned_pixscal(header) -> float | None:
+    """Unbinned ″/pix from ``PIXSCAL`` / ``PIXSCALE`` (Hall: 0.327)."""
+    if header is None:
+        return None
+    for key in ("PIXSCAL", "PIXSCALE"):
+        raw = header.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def plate_scale_from_header(header) -> float | None:
+    """Binned ″/pix from header ``PIXSCAL`` × ``CCDSUM``, or ``None``."""
+    base = unbinned_pixscal(header)
+    if base is None:
+        return None
+    return base * bin_factor(header.get("CCDSUM") if header is not None else None)
+
+
+def plate_scale_arcsec(
+    *,
+    detector: str = "",
+    instrument: str = "",
+    telescope: str = "",
+    ccdsum: str | None = None,
+    pixscal_unbinned: float | None = None,
+    header=None,
+) -> float:
+    """Arcsec per pixel in the file that will be solved, including binning.
+
+    Named detector/telescope first (Hall ``PIXSCAL`` 0.327 is stale — the
+    file scale is 0.369″/pix unbinned). Then header ``PIXSCAL``, then HDI.
+    """
+    if header is not None and ccdsum is None:
+        ccdsum = header.get("CCDSUM")
+        if pixscal_unbinned in (None, ""):
+            pixscal_unbinned = unbinned_pixscal(header)
+    blob = f"{detector} {instrument} {telescope}".lower()
+    base = None
+    for name, scale in _UNBINNED_SCALES:
+        if name in blob:
+            base = scale
+            break
+    if base is None and pixscal_unbinned not in (None, ""):
+        try:
+            value = float(pixscal_unbinned)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            base = value
+    if base is None:
+        base = 0.43
+    return base * bin_factor(ccdsum)
 
 
 DEFAULT_WCS = {
@@ -36,8 +137,9 @@ DEFAULT_WCS = {
     "downsample": 2,
     "overwrite": False,
     "timeout_sec": 300,
-    "verbose": True,  # pass --verbose to solve-field (full text always in logs)
-    "show_solver_output": False,  # True = stream every solve-field line to terminal
+    # Keep the terminal quiet; full solve-field text still goes to wcs_logs/.
+    "verbose": False,  # True → pass --verbose to solve-field (huge logs)
+    "show_solver_output": False,  # True → stream every solve-field line to terminal
     "include_objects": [],  # empty = all science frames; else only these OBJECT names
 }
 
@@ -47,6 +149,33 @@ def wcs_config(cfg: dict) -> dict[str, Any]:
     out = dict(DEFAULT_WCS)
     out.update(cfg.get("wcs") or {})
     return out
+
+
+def apply_header_plate_scale(wcfg: dict[str, Any], header) -> float | None:
+    """Widen the solve-field scale window so it contains header PIXSCAL×binning.
+
+    Hall ``PIXSCAL`` can be stale (0.327 unbinned vs 0.369 measured). Replacing
+    the config with that card *tightens* the window onto the wrong value.
+    Expanding so both the YAML scale and PIXSCAL×bin sit inside the window
+    still includes the real 0.739″/pix at 2×2. Returns the center scale, or
+    ``None`` when the header has no PIXSCAL.
+    """
+    header_scale = plate_scale_from_header(header)
+    if header_scale is None:
+        return None
+    cfg_scale = float(wcfg.get("scale_arcsec_per_pix") or 0)
+    if cfg_scale <= 0:
+        wcfg["scale_arcsec_per_pix"] = header_scale
+        return header_scale
+    lo = min(header_scale, cfg_scale)
+    hi = max(header_scale, cfg_scale)
+    if hi / lo - 1.0 <= float(wcfg.get("scale_tol_frac") or 0.05) * 2:
+        return cfg_scale
+    mid = 0.5 * (lo + hi)
+    need = max(1.0 - lo / mid, hi / mid - 1.0) + 0.03
+    wcfg["scale_arcsec_per_pix"] = mid
+    wcfg["scale_tol_frac"] = max(float(wcfg.get("scale_tol_frac") or 0.05), need)
+    return mid
 
 
 def parse_pointing(
@@ -125,7 +254,7 @@ def build_solve_field_cmd(
         f"{scale_hi:.6g}",
     ]
 
-    if wcs_cfg.get("verbose", True):
+    if wcs_cfg.get("verbose", False):
         cmd.append("--verbose")
 
     downsample = wcs_cfg.get("downsample")
@@ -257,10 +386,43 @@ def _parse_solve_progress(line: str, state: dict[str, Any]) -> bool:
     if odds is not None and odds > float(state.get("peak_odds") or 0):
         state["peak_odds"] = odds
         changed = True
-    if re.search(r"Field\s+\d+\s+solved|solved with index", s, flags=re.IGNORECASE):
+
+    m = re.search(r"solved with index\s+(\S+)", s, flags=re.IGNORECASE)
+    if m:
         state["solved"] = True
+        state["solved_index"] = _short_index_name(m.group(1))
+        return True
+    if re.search(r"Field\s+\d+\s+solved", s, flags=re.IGNORECASE):
+        state["solved"] = True
+        # Prefer an explicit index on this line; else the last tried index.
+        m = re.search(r"index\s+(\S+)", s, flags=re.IGNORECASE)
+        if m:
+            state["solved_index"] = _short_index_name(m.group(1))
+        elif state.get("index") and not state.get("solved_index"):
+            state["solved_index"] = state["index"]
         changed = True
     return changed
+
+
+def _solver_solved_index(text: str) -> str | None:
+    """Return the short index name that solved the field, if reported."""
+    if not text:
+        return None
+    # Prefer the explicit success line.
+    matches = list(re.finditer(r"solved with index\s+(\S+)", text, flags=re.IGNORECASE))
+    if matches:
+        return _short_index_name(matches[-1].group(1))
+    # Fallback: last "Trying index" before a "Field N solved" line.
+    last_try: str | None = None
+    for line in text.splitlines():
+        m = re.match(r"Trying index\s+(\S+)", line.strip())
+        if m:
+            last_try = _short_index_name(m.group(1))
+            continue
+        if re.search(r"Field\s+\d+\s+solved|solved with index", line, flags=re.IGNORECASE):
+            if last_try:
+                return last_try
+    return last_try
 
 
 def _closeness_label(peak: float | None, *, target: float = SOLVE_ODDS_TARGET) -> str:
@@ -276,19 +438,16 @@ def _closeness_label(peak: float | None, *, target: float = SOLVE_ODDS_TARGET) -
     return f"match {peak:.3g}/{target:.0f} ({pct}%)"
 
 
-def _wcs_progress_line(elapsed: int, state: dict[str, Any], *, hint: str | None) -> str:
-    parts = [f"    solving WCS...  ({elapsed}s)"]
-    lo, hi = state.get("depth_lo"), state.get("depth_hi")
-    if lo is not None and hi is not None:
-        parts.append(f"depth {lo}–{hi}")
-    elif lo is not None:
-        parts.append(f"depth {lo}+")
-    if state.get("index"):
-        parts.append(str(state["index"]))
+def _wcs_progress_line(elapsed: int, state: dict[str, Any], *, hint: str | None = None) -> str:
+    """Short status line for the terminal (timer + solved/odds only)."""
+    parts = [f"    solving… {elapsed}s"]
     if state.get("solved"):
         parts.append("SOLVED")
-    else:
-        parts.append(_closeness_label(state.get("peak_odds")))
+    elif state.get("peak_odds") is not None:
+        # Only show odds once we have a meaningful peak (avoids spam at ~1.0)
+        peak = float(state["peak_odds"])
+        if peak > 1.5:
+            parts.append(_closeness_label(peak))
     line = "  ".join(parts)
     if hint:
         line = f"{line}  — {hint}"
@@ -318,6 +477,8 @@ def _run_solve_field_streaming(
     if shutil.which("stdbuf"):
         run_cmd = ["stdbuf", "-oL", "-eL", *run_cmd]
 
+    show_command(run_cmd)
+
     proc = subprocess.Popen(
         run_cmd,
         stdout=subprocess.PIPE,
@@ -337,16 +498,26 @@ def _run_solve_field_streaming(
     is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
     show_progress = bool(progress) and not stream_terminal
 
-    def _paint(force: bool = False) -> None:
-        nonlocal widest
+    last_paint = 0.0
+
+    def _paint(*, force: bool = False) -> None:
+        nonlocal widest, last_paint
         if not show_progress:
             return
-        elapsed = int(time.monotonic() - t0)
+        now = time.monotonic()
+        # Non-TTY: at most one status line every 10s (not per index).
+        if not is_tty and not force and (now - last_paint) < 10.0:
+            return
+        # TTY: refresh at most ~2 Hz so the line does not flicker.
+        if is_tty and not force and (now - last_paint) < 0.5:
+            return
+        last_paint = now
+        elapsed = int(now - t0)
         line = _wcs_progress_line(elapsed, prog, hint=progress_hint)
         if is_tty:
             widest = max(widest, len(line))
             print("\r" + dim(line), end="", flush=True)
-        elif force:
+        else:
             print(dim(line), flush=True)
 
     if show_progress:
@@ -374,10 +545,8 @@ def _run_solve_field_streaming(
             if stream_terminal:
                 print(dim(f"    | {line.rstrip()}"), flush=True)
             elif show_progress:
-                if _parse_solve_progress(line, prog):
-                    _paint(force=not is_tty)
-                else:
-                    _paint()
+                _parse_solve_progress(line, prog)
+                _paint()
         # Drain anything left after kill / exit
         rest = proc.stdout.read()
         if rest:
@@ -398,9 +567,7 @@ def _run_solve_field_streaming(
         raise
     finally:
         if show_progress and is_tty:
-            print("\r" + " " * max(widest, 80) + "\r", end="")
-            elapsed = int(time.monotonic() - t0)
-            print(dim(f"    solving WCS done ({elapsed}s)"))
+            print("\r" + " " * max(widest, 80) + "\r", end="", flush=True)
 
     text = "".join(chunks).rstrip()
     if timed_out:
@@ -501,12 +668,12 @@ def solve_one_frame(
     wcs_cfg: dict[str, Any],
     overwrite: bool,
 ) -> tuple[str, str, str]:
-    """
-    Plate-solve one science FITS in place.
+    """Plate-solve one science FITS in place.
 
     Returns ``(status, message, solver_output)`` where status is
     ``ok`` / ``skip`` / ``fail`` and ``solver_output`` is captured
-    solve-field stdout/stderr (may be empty for skip).
+    solve-field stdout/stderr (may be empty for skip). The caller
+    adds ``w`` to the filename prefix after a successful solve.
     """
     path = Path(path)
     with fits.open(path, memmap=False) as hdul:
@@ -546,7 +713,6 @@ def solve_one_frame(
 
         try:
             if stream_terminal:
-                print(dim(f"    $ {cmd_txt}"), flush=True)
                 returncode, body = _run_solve_field_streaming(
                     cmd,
                     env=env,
@@ -606,20 +772,31 @@ def solve_one_frame(
 
         _merge_wcs_into_science(path, out_fits)
 
-    coord = ""
+    idx = _solver_solved_index(solver_out)
+    if idx:
+        with fits.open(path, mode="update", memmap=False) as hdul:
+            _append_history(
+                hdul[0].header,
+                f"ccd_pipeline: WCS solved with index {idx}",
+            )
+            hdul.flush()
+
+    bits = ["WCS written"]
+    if idx:
+        bits.append(f"index={idx}")
     if pointing is not None:
-        coord = (
-            f"  hint RA={pointing.ra.to_string(unit=u.hour, sep=':', precision=1)} "
+        bits.append(
+            f"hint RA={pointing.ra.to_string(unit=u.hour, sep=':', precision=1)} "
             f"Dec={pointing.dec.to_string(unit=u.deg, sep=':', precision=0)}"
         )
-    return "ok", f"WCS written{coord}", solver_out
+    return "ok", "  ".join(bits), solver_out
 
 
 def iter_science_fits(cfg: dict) -> list[Path]:
     sci_dir = Path(cfg["paths"]["output_dir"]) / "science"
     if not sci_dir.is_dir():
         return []
-    return sorted(p for p in sci_dir.glob("*.fits") if p.is_file())
+    return list(iter_fits_files(sci_dir))
 
 
 def _object_token(name: str) -> str:
@@ -637,7 +814,8 @@ def filter_science_by_objects(paths: list[Path], objects: list[str]) -> list[Pat
         return paths
     kept: list[Path] = []
     for path in paths:
-        marked = f".{path.stem}."
+        _, rest = split_science_stage_name(path.name)
+        marked = f".{Path(rest).stem}."
         if any(f".{tok}." in marked for tok in tokens):
             kept.append(path)
     return kept
@@ -687,7 +865,9 @@ def solve_science_wcs(
 
     ``objects`` (CLI) or ``wcs.include_objects`` (YAML) restrict which frames
     are attempted. Names match the OBJECT component of science filenames
-    (e.g. ``APSExS-F-1`` in ``2017JUN29.APSExS-F-1.g.01.fits``).
+    (e.g. ``APSExS-F-1`` in ``p-2017JUN29.APSExS-F-1.g.01.fits``).
+    Successful solves add ``w`` to the stage prefix (``p-`` → ``pw-``,
+    ``pf-`` → ``pfw-``).
     """
     wcfg = wcs_config(cfg)
     if overwrite is not None:
@@ -711,8 +891,43 @@ def solve_science_wcs(
     if limit is not None:
         paths = paths[:limit]
 
+    if paths:
+        try:
+            hdr0 = fits.getheader(paths[0], 0)
+        except Exception:
+            hdr0 = None
+        if hdr0 is not None:
+            cfg_scale = float(wcfg["scale_arcsec_per_pix"])
+            cfg_tol = float(wcfg.get("scale_tol_frac") or 0.05)
+            used = apply_header_plate_scale(wcfg, hdr0)
+            header_scale = plate_scale_from_header(hdr0)
+            if (
+                used is not None
+                and header_scale is not None
+                and (
+                    abs(used - cfg_scale) / max(used, 1e-6) > 0.05
+                    or abs(float(wcfg.get("scale_tol_frac") or 0) - cfg_tol) > 1e-6
+                )
+            ):
+                lo = used * (1.0 - float(wcfg["scale_tol_frac"]))
+                hi = used * (1.0 + float(wcfg["scale_tol_frac"]))
+                warn(
+                    f"wcs.scale_arcsec_per_pix is {cfg_scale:g}″/pix but header "
+                    f"PIXSCAL×binning is {header_scale:g}″/pix. Searching "
+                    f"{lo:.3g}–{hi:.3g}″/pix so a stale PIXSCAL card cannot "
+                    "exclude the real scale."
+                )
+
     out_dir = Path(cfg["paths"]["output_dir"])
     sci_dir = out_dir / "science"
+    wcs_flags: list[str] = []
+    if limit is not None:
+        wcs_flags.extend(["--limit", str(limit)])
+    if wcfg.get("overwrite"):
+        wcs_flags.append("--overwrite")
+    for name in want:
+        wcs_flags.extend(["--object", str(name)])
+    show_ccd(cfg, "wcs", *wcs_flags)
     info(f"Science directory: {sci_dir}")
     info(f"Solver           : {wcfg.get('solve_field', 'solve-field')}")
     info(
@@ -765,6 +980,9 @@ def solve_science_wcs(
             status, msg, solver_out = solve_one_frame(
                 path, wcs_cfg=wcfg, overwrite=bool(wcfg.get("overwrite"))
             )
+            if status in {"ok", "skip"}:
+                path = retitle_science_file(path, processed=True, wcs=True)
+                remove_unprefixed_science_twin(path)
             counts[status] = counts.get(status, 0) + 1
             _log_line(log_fh, f"[{i}/{len(paths)}] {status.upper():<4}  {path.name}  {msg}")
 

@@ -39,6 +39,7 @@ class S:
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
     WHITE = "\033[37m"
+    BRIGHT_BLUE = "\033[94m"
     BRIGHT_CYAN = "\033[96m"
     BRIGHT_GREEN = "\033[92m"
     BRIGHT_YELLOW = "\033[93m"
@@ -84,9 +85,45 @@ def subheading(title: str) -> None:
 
 
 def step(label: str) -> None:
-    """In-progress file / action line."""
+    """In-progress file / action line (new line; prefer ``progress_status`` in loops)."""
+    progress_clear()
     print()
     print(style(f"  → {label}", S.BOLD, S.MAGENTA))
+
+
+_progress_width = 0
+_progress_active = False
+
+
+def progress_status(message: str) -> None:
+    """Update one in-place status line (TTY) or print a single line (piped)."""
+    global _progress_width, _progress_active
+    text = f"  → {message}"
+    if not getattr(sys.stdout, "isatty", lambda: False)():
+        print(style(text, S.BOLD, S.MAGENTA))
+        return
+    # Pad with spaces so a shorter update erases the previous longer one
+    width = max(_progress_width, len(text))
+    line = text.ljust(width)
+    print("\r" + style(line, S.BOLD, S.MAGENTA), end="", flush=True)
+    _progress_width = width
+    _progress_active = True
+
+
+def progress_clear() -> None:
+    """Erase an in-place progress line (no-op if none active)."""
+    global _progress_width, _progress_active
+    if _progress_active and getattr(sys.stdout, "isatty", lambda: False)():
+        print("\r" + " " * max(_progress_width, 80) + "\r", end="", flush=True)
+    _progress_width = 0
+    _progress_active = False
+
+
+def progress_done(message: str | None = None) -> None:
+    """Finish the in-place line; optionally print a one-line summary."""
+    progress_clear()
+    if message:
+        print(style(f"  ✓ {message}", S.BOLD, S.BRIGHT_GREEN))
 
 
 def success(text: str) -> None:
@@ -103,6 +140,27 @@ def fail(text: str) -> None:
 
 def info(text: str) -> None:
     print(style(text, S.CYAN))
+
+
+def show_command(argv: list[str] | tuple[str, ...]) -> None:
+    """Print a command before it runs, in a color reserved for commands."""
+    import shlex
+
+    text = shlex.join(str(part) for part in argv)
+    print(style(f"  $ {text}", S.BOLD, S.BRIGHT_BLUE), flush=True)
+
+
+def show_ccd(cfg: dict, subcommand: str, *flags: str) -> None:
+    """Print the ``ccd`` invocation that performs this step, when the config path is known."""
+    path = cfg.get("_config_path")
+    if not path:
+        return
+    show_command(["ccd", subcommand, "--config", str(path), *flags])
+
+
+def show_astropy(text: str) -> None:
+    """Print an underlying Astropy/ccdproc call in a dimmer blue than ``show_command``."""
+    print(style(f"    {text}", S.DIM, S.BLUE), flush=True)
 
 
 def status_tag(level: str) -> str:
@@ -138,6 +196,7 @@ def run_with_spinner(
 
     If ``hint`` is set, it is shown next to the timer (e.g. a coffee nudge).
     """
+    progress_clear()
     suffix = f" — {hint}" if hint else ""
 
     if not getattr(sys.stdout, "isatty", lambda: False)():

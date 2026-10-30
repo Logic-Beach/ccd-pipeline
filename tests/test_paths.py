@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from ccd_pipeline.config import config_paths_root, load_config
-from ccd_pipeline.night_init import resolve_night_paths, _rel_to_root
+from ccd_pipeline.night_init import (
+    camera_label,
+    config_mirror_paths,
+    night_config_paths,
+    resolve_night_paths,
+    save_overscan_biassec,
+    _rel_to_root,
+)
 
 
 def test_config_paths_root_uses_parent_of_configs(tmp_path: Path):
@@ -49,6 +56,66 @@ def test_resolve_night_paths_raw_campaign_layout(tmp_path: Path):
     assert raw_dir == raw_night.resolve()
     assert reduced == (campaign / "REDUCED" / "2017JUN29").resolve()
     assert night_root == campaign.resolve()
+
+
+def test_camera_label_uses_detector_when_instrument_is_a_placeholder():
+    assert camera_label("test", "s2kb") == "s2kb"
+    assert camera_label("hdi", "s2kb") == "hdi"
+    assert camera_label("", "s2kb") == "s2kb"
+
+
+def test_night_config_paths_writes_data_folder_and_repo(tmp_path: Path):
+    campaign = tmp_path / "2013_OCT"
+    night = campaign / "RAW" / "2013OCT12"
+    night.mkdir(parents=True)
+    repo = tmp_path / "ccd-pipeline"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname='ccd'\n")
+    paths = night_config_paths(
+        night_root=campaign, project_root=repo, filename="test_2013oct12.yaml"
+    )
+    assert paths[0] == (campaign / "configs" / "test_2013oct12.yaml").resolve()
+    assert paths[1] == (repo / "configs" / "test_2013oct12.yaml").resolve()
+
+
+def test_night_config_paths_single_when_data_is_the_repo(tmp_path: Path):
+    repo = tmp_path / "ccd-pipeline"
+    (repo / "configs").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname='ccd'\n")
+    paths = night_config_paths(
+        night_root=repo, project_root=repo, filename="hdi_night.yaml"
+    )
+    assert paths == [(repo / "configs" / "hdi_night.yaml").resolve()]
+
+
+def test_save_overscan_updates_night_and_repo_copies(tmp_path: Path, monkeypatch):
+    campaign = tmp_path / "2013_OCT"
+    raw = campaign / "RAW" / "2013OCT12"
+    raw.mkdir(parents=True)
+    repo = tmp_path / "ccd-pipeline"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname='ccd'\n")
+    monkeypatch.chdir(repo)
+    text = (
+        "# Auto-generated\n"
+        "night_id: 2013OCT12\n"
+        "paths:\n"
+        f"  raw_dir: {raw}\n"
+        "overscan:\n"
+        "  median: true\n"
+    )
+    repo_cfg = repo / "configs" / "test_2013oct12.yaml"
+    repo_cfg.parent.mkdir()
+    repo_cfg.write_text(text)
+    cfg = {
+        "paths": {"raw_dir": raw},
+        "overscan": {"median": True},
+    }
+    save_overscan_biassec(repo_cfg, cfg, "[1036:1056,1:1024]")
+    night_cfg = campaign / "configs" / "test_2013oct12.yaml"
+    assert "1036:1056" in repo_cfg.read_text()
+    assert "1036:1056" in night_cfg.read_text()
+    assert night_cfg.resolve() in config_mirror_paths(repo_cfg, cfg)
 
 
 def test_rel_to_root_absolute_without_project_marker(tmp_path: Path):

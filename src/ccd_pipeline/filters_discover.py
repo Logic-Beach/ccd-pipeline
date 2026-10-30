@@ -13,16 +13,53 @@ from typing import Any
 
 from astropy.io import fits
 
-from .io import filter_key
+from .inventory import is_flat_obstype
+from .io import _wheel_ids_look_valid, iter_fits_files
+
+
+# Longer markers first so ``dflat-`` wins over the ``flat-`` inside it.
+_FLAT_MARKERS = ("skyflat-", "dflat-", "tflat-", "sflat-", "flat-")
 
 
 def _guess_name_from_object(obj: str) -> str | None:
-    obj = (obj or "").strip()
-    lower = obj.lower()
-    for prefix in ("dflat-", "flat-", "skyflat-", "sflat-"):
-        if lower.startswith(prefix):
-            return obj.split("-", 1)[1]
-    return None
+    """Return the band token from a flat OBJECT name, if one is present.
+
+    Matches a marker anywhere in the name, so ``dflat-r`` and ``oct12-dflat-u``
+    both yield the band (``r``, ``u``). ``tflat-`` covers twilight flats.
+    """
+    text = (obj or "").strip()
+    lower = text.lower()
+    best: tuple[str, int] | None = None
+    for marker in _FLAT_MARKERS:
+        idx = lower.find(marker)
+        if idx < 0:
+            continue
+        if best is None or idx < best[1] or (idx == best[1] and len(marker) > len(best[0])):
+            best = (marker, idx)
+    if best is None:
+        return None
+    marker, idx = best
+    name = text[idx + len(marker) :].strip()
+    return name or None
+
+
+def _suggest_filter_name(objects: Counter, fallback: str) -> tuple[str, bool]:
+    """Pick a short name from flat OBJECT labels.
+
+    Returns ``(name, named_from_object)``. ``named_from_object`` is true only
+    when every labeled flat agrees on one band. A wheel-key fallback
+    (``7_2``) or a split vote needs the user to type the name.
+    """
+    votes: Counter[str] = Counter()
+    for obj, n in objects.items():
+        guessed = _guess_name_from_object(obj)
+        if guessed:
+            votes[guessed] += n
+    if len(votes) == 1:
+        return next(iter(votes)), True
+    if votes:
+        return votes.most_common(1)[0][0], False
+    return fallback, False
 
 
 def discover_filter_combos(
@@ -44,15 +81,21 @@ def discover_filter_combos(
     raw_dir = Path(raw_dir)
     by_key: dict[str, dict[str, Any]] = {}
 
-    for path in sorted(raw_dir.glob("*.fits")):
-        if path.name.lower() == "latest.fits":
-            continue
+    for path in iter_fits_files(raw_dir):
         hdr = fits.getheader(path, 0)
         obstype = str(hdr.get(obstype_key, "")).strip().upper()
-        if obstype != str(flat_value).strip().upper():
+        if not is_flat_obstype(obstype, flat_value):
             continue
 
-        key = filter_key(hdr, filter1_key, filter2_key)
+        f1 = str(hdr.get(filter1_key, "")).strip()
+        f2 = str(hdr.get(filter2_key, "")).strip()
+        if not f1 and not f2:
+            for card in ("FILTER", "FILTNAME", "FILTERS"):
+                name = str(hdr.get(card, "")).strip()
+                if name:
+                    f1 = f2 = name
+                    break
+        key = f"{f1},{f2}"
         obj = str(hdr.get(object_key, "")).strip()
         exptime = hdr.get(exptime_key)
 
@@ -60,8 +103,8 @@ def discover_filter_combos(
             key,
             {
                 "key": key,
-                "filter1": str(hdr.get(filter1_key, "")).strip(),
-                "filter2": str(hdr.get(filter2_key, "")).strip(),
+                "filter1": f1,
+                "filter2": f2,
                 "n": 0,
                 "objects": Counter(),
                 "exptimes": Counter(),
@@ -74,10 +117,25 @@ def discover_filter_combos(
 
     results = []
     for key, rec in sorted(by_key.items(), key=lambda kv: kv[0]):
-        # Prefer the most common OBJECT for naming suggestion
         top_obj = rec["objects"].most_common(1)[0][0] if rec["objects"] else ""
-        suggested = _guess_name_from_object(top_obj) or key.replace(",", "_")
+        f1 = rec["filter1"]
+        f2 = rec["filter2"]
+        if f1 and f1 == f2:
+            fallback = f1
+        else:
+            fallback = key.replace(",", "_")
+        suggested, named = _suggest_filter_name(rec["objects"], fallback)
+        # FILTNAME / FILTER already holds the band (u, g, r…) — do not prompt.
+        if (
+            not named
+            and f1
+            and f1 == f2
+            and not _wheel_ids_look_valid(key)
+        ):
+            suggested = f1
+            named = True
         rec["suggested_name"] = suggested
+        rec["named_from_object"] = named
         rec["top_object"] = top_obj
         results.append(rec)
     return results
@@ -87,6 +145,7 @@ def interactive_filter_map(
     combos: list[dict[str, Any]],
     *,
     prior_map: dict[str, str] | None = None,
+    unresolved_only: bool = False,
 ) -> dict[str, str]:
     """
     Prompt the user to assign a short filter name to each wheel combination.
@@ -96,11 +155,18 @@ def interactive_filter_map(
 
     prior_map = prior_map or {}
     heading("Filter wheel mapping")
-    print(
-        "Each unique FILTER1,FILTER2 pair found in FLAT frames is listed below.\n"
-        "Confirm or edit the short name used for master flats / science matching.\n"
-        "(Wheel setups change — remapping per night is expected.)\n"
-    )
+    if unresolved_only:
+        print(
+            "These wheel positions have no single filter name in OBJECT.\n"
+            "Enter the short name used for master flats and science frames\n"
+            "(for example u, g, r, i, z).\n"
+        )
+    else:
+        print(
+            "Each unique FILTER1,FILTER2 pair found in FLAT frames is listed below.\n"
+            "Confirm or edit the short name used for master flats / science matching.\n"
+            "(Wheel setups change — remapping per night is expected.)\n"
+        )
 
     mapping: dict[str, str] = {}
     used_names: dict[str, str] = {}
@@ -109,7 +175,11 @@ def interactive_filter_map(
         key = rec["key"]
         objects = ", ".join(f"{n}× {o!r}" for o, n in rec["objects"].most_common(5))
         exps = ", ".join(str(e) for e, _ in rec["exptimes"].most_common(5))
+        fallback = key.replace(",", "_")
         default = prior_map.get(key) or rec["suggested_name"]
+        # A bare wheel id (7_2) is not a filter. Make the user type one.
+        if not rec.get("named_from_object", True) and default == fallback:
+            default = None
 
         subheading(f"Wheel key {key}")
         print(f"Wheel key : {key}  (FILTER1={rec['filter1']}, FILTER2={rec['filter2']})")
@@ -138,5 +208,7 @@ def interactive_filter_map(
     for key, name in mapping.items():
         print(f"  {key:>12}  →  {name}")
     if not ask_yes_no("Accept this filter map", default=True):
-        return interactive_filter_map(combos, prior_map=mapping)
+        return interactive_filter_map(
+            combos, prior_map=mapping, unresolved_only=unresolved_only
+        )
     return mapping

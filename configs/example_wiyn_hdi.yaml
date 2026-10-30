@@ -68,11 +68,42 @@ filter_map:
 
 science:
   # Products: {night_id}.{OBJECT}.{filter}[.NN].fits
+  # Frames whose OBJECT contains any of these (case-insensitive) are skipped
+  # for bias, flats, and science. "junk" is always excluded even if omitted.
   include_objects: []
   exclude_object_substrings:
     - "rfocus"
     - "junk"
     - "focus"
+
+# Additive fringe (airglow); build after reduce, apply optional.
+# Tunables live in src/ccd_pipeline/fringe.py::DEFAULT_FRINGE (full comments).
+# Nothing is interpolated or smoothed; pixels with no unmasked sample are 0
+# (no correction) and are counted in the NSAMP extension / preview.
+# Quick dial:
+#   ghosts remain  → ↑ dilate_pix a little (costs no-data pixels), or more frames
+#   no-data pixels → ↓ dilate_pix
+#   reject_high > 0 with few frames biases the master bright around stars — keep 0
+fringe:
+  filters: ["z", "i"]          # which filters get masters
+  min_frames: 3                # need at least this many inputs (≥3 practical)
+  select: all                  # blanks | science | all
+  blank_substrings: ["blank", "sky", "empty"]
+  blanks_fallback: all         # if too few blanks: all | science | none
+  airmass_tol: 0.15            # ± AIRMASS about median (0=off)
+  time_tol_hours: 1.5          # ± hours about median DATE-OBS (0=off)
+  sky_tol_frac: 0.3            # |sky-med|/med (0=off)
+  min_sky: 40.0                # drop shallow frames, ADU (0=off)
+  min_exptime: 20.0            # drop short exposures, sec (0=off)
+  star_nsigma: 5.0             # core mask σ (keep high so fringe survives)
+  wing_nsigma: 2.5             # connected soft-wing growth σ
+  dilate_pix: 16               # hard dilate radius (px); big → more no-data pixels
+  star_smooth_sigma: 0.0       # detect on blurred copy; usually 0
+  reject_high: 0               # 0 = masked median (unbiased); >0 only with ≥8 frames
+  hole_fill: data              # data = cores-only re-measure, else 0 | zero
+  residual_nsigma: 0.0         # 0 = off; >0 flags compact ghosts and sets them to 0
+  residual_smooth_sigma: 15.0  # large-scale model σ for ghost finder
+  residual_dilate: 8           # dilate residual-ghost mask (px)
 
 # Offline WCS via astrometry.net solve-field (after ccd reduce)
 wcs:
@@ -86,6 +117,6 @@ wcs:
   downsample: 2
   overwrite: false
   timeout_sec: 300
-  verbose: true
+  verbose: false              # true = --verbose (huge solve-field logs)
   show_solver_output: false   # true = stream every solve-field line live
   include_objects: []         # e.g. [APSExS-F-1]; empty = all
