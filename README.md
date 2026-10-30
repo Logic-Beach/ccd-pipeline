@@ -1,7 +1,5 @@
 # CCD reduction pipeline
-
-Calibrate one night of WIYN 0.9m **HDI** CCD data (bias → flats → science →
-optional fringe → optional WCS). Built on
+Built on
 [Astropy](https://docs.astropy.org/) /
 [ccdproc](https://ccdproc.readthedocs.io/), following the
 [Astropy CCD Reduction Guide](https://www.astropy.org/ccd-reduction-and-photometry-guide/).
