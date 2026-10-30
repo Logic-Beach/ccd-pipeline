@@ -25,8 +25,8 @@ conda create -n astro python=3.12 -y
 conda activate astro
 conda install -c conda-forge astropy ccdproc numpy scipy matplotlib pyyaml -y
 
-# If ccdproc failed to install via conda:
-#   pip install ccdproc
+# If ccdproc / etc failed to install via conda:
+#   pip install ccdproc / etc
 
 # 4. Install this package (make sure you're in the right 'ccd-pipeline' directory)
 pip install -e .
@@ -38,32 +38,32 @@ pip install -e .
 ccd --help
 ```
 
-After that, `ccd` works from any folder while `astro` is active.
+After that, `ccd` works from any folder while `astro` environment is active. ```conda activate astro``` to activate the environment
 
 ### Image examination
 
-[Ginga](https://ginga.readthedocs.io/) is installed with the pipeline (`ginga[qt6]` in `pyproject.toml`). It is the on-screen replacement for IRAF `imexamine`: star FWHM and radial profiles. The Qt extra is required or the window never opens.
+[Ginga](https://ginga.readthedocs.io/) is installed with the pipeline (`ginga[qt6]` in `pyproject.toml`). It is the on-screen replacement for IRAF `imexamine`: star FWHM and radial profiles. The Qt extra is required or the window never opens. (Plugins > Pick > choose a star)
 
-[SAOImage DS9](https://sites.google.com/cfa.harvard.edu/saoimageds9) is the frame display. The Mac app is not on `PATH` until it is linked into the env:
+[SAOImage DS9](https://sites.google.com/cfa.harvard.edu/saoimageds9) is the frame display. 
+To run from the terminal The Mac app will need to be in your `PATH` and linked to the conda astro env:
 
 ```bash
 conda activate astro
 ln -sf /Applications/SAOImageDS9.app/Contents/MacOS/ds9 "$CONDA_PREFIX/bin/ds9"
 ```
 
-DS9 stores the scale it opens with in `~/.ds9/ds9.<version>.prf`. The default that matches a reduced frame is zscale. In `ds9.8.7.prf` that line was minmax:
+DS9 stores the scale it opens with in `~/.ds9/ds9.<version>.prf`. The best that matches our data is zscale for visibility. In `ds9.8.7.prf` that line was minmax:
 
 ```tcl
 array set pscale { datasec 1 mode minmax scope local log 1000 type linear }
 ```
-
-`ds9.8.8.prf` (the prefs for the installed 8.8 app) is:
+Change that to zscale:
 
 ```tcl
 array set pscale { datasec 1 mode zscale scope local log 1000 type linear }
 ```
 
-The same change from the window is **Scale → ZScale**, then **Edit → Preferences → Save Preferences**. One file, without changing the saved default: `ds9 -scale zscale <frame>.fits`.
+The same change from the DS9 window is **Scale → ZScale**, then **Edit → Preferences → Save Preferences**. One file, without changing the saved default: `ds9 -scale zscale <frame>.fits`.
 
 ### Install [Astrometry.net](https://astrometry.net/) offline WCS solver
 
